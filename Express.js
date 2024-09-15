@@ -2,21 +2,24 @@ const express = require('express');
 const cors = require('cors');
 
 const app = express();
-app.use(cors()); // Allow all origins
-app.use(express.json()); // For parsing application/json
 
-// Your route handlers
-app.post('/add_customer', (_req, _res) => {
-    // Your logic here
+// Use CORS middleware
+app.use(cors({
+    origin: 'http://127.0.0.1:5500' // Replace this with the origin of your frontend
+}));
+
+app.use(express.json());
+
+// Define your routes
+app.post('/add_customer', (req, res) => {
+    // Your logic to add a customer
+    res.json({ message: 'Customer added successfully' });
 });
 
-// Add other routes similarly...
-
+// Start the server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
 });
 
-app.use(cors({
-    origin: 'https://library-management-system-api-4w5t.onrender.com' // Replace with the actual origin of your frontend
-}));
+
