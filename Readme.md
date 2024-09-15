@@ -22,7 +22,7 @@ This is a Flask-based API for managing a library system. It allows you to manage
 1. **Clone the Repository**:
 
     ```bash
-    git clone <repository-url>
+    git clone <https://github.com/dopeWeb/Library-Management-System-API.git>
     ```
 
 2. **Create and Activate a Virtual Environment**:
