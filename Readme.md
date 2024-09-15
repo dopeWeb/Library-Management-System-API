@@ -287,5 +287,5 @@ Feel free to submit issues or pull requests to improve the application. Contribu
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+This project is licensed under the MIT License.
 
