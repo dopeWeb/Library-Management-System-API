@@ -43,6 +43,26 @@ def get_max_loan_days(book_type):
     return {1: 10, 2: 5, 3: 2}.get(book_type, 0)
 
 
+def seed_data():
+    if not Customers.query.first():
+        db.session.bulk_save_objects([
+            Customers(name='John Doe', city='New York', age=30, email='john.doe@example.com'),
+            Customers(name='Jane Smith', city='Los Angeles', age=25, email='jane.smith@example.com'),
+            Customers(name='Jade Bmith', city='Los Demons', age=666, email='jade.bmith@example.com')
+        ])
+        db.session.commit()
+
+
+    if not Books.query.first():
+        db.session.bulk_save_objects([
+            Books(name='The Great Gatsby', author='F. Scott Fitzgerald', year_published=1925, type=1),
+            Books(name='1984', author='George Orwell', year_published=1949, type=2),
+            Books(name='To Kill a Mockingbird', author='Harper Lee', year_published=1960, type=3),
+            Books(name='To No Kill a Mockingbird', author='Harper Lee', year_published=2005, type=2),
+            Books(name='To Yes Kill a Mockingbird', author='Harper Lee', year_published=1999, type=3)
+        ])
+        db.session.commit()
+        
 
 @app.route('/add_customer', methods=['POST'])
 def add_customer():
@@ -285,4 +305,5 @@ def remove_customer():
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
+        seed_data()
     app.run(debug=True)
