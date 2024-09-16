@@ -319,6 +319,25 @@ def remove_customer():
 
 
 
+@app.route('/get_customer_id_by_name/<string:name>', methods=['GET'])
+def get_customer_id_by_name(name):
+    customer = Customers.query.filter(db.func.lower(Customers.name) == db.func.lower(name), Customers.deleted == False).first()
+    if customer:
+        return jsonify({"id": customer.id}), 200
+    else:
+        return jsonify({"message": "Customer not found."}), 404
+    
+
+@app.route('/get_book_id_by_name/<string:name>', methods=['GET'])
+def get_book_id_by_name(name):
+    book = Books.query.filter(db.func.lower(Books.name) == db.func.lower(name), Books.deleted == False).first()
+    if book:
+        return jsonify({"id": book.id}), 200
+    else:
+        return jsonify({"message": "Book not found."}), 404
+
+
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
