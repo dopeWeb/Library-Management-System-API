@@ -82,16 +82,29 @@ def add_customer():
 @app.route('/add_book', methods=['POST'])
 def add_book():
     data = request.json
-    if Books.query.filter_by(name=data['name']).first():
+
+    # Normalize field names to lowercase
+    normalized_data = {
+        'name': data.get('name') or data.get('Name'),
+        'author': data.get('author') or data.get('Author'),
+        'yearPublished': data.get('yearPublished') or data.get('YearPublished'),
+        'type': data.get('type') or data.get('Type')
+    }
+
+    # Ensure all required fields are present
+    if not normalized_data['name'] or not normalized_data['author'] or not normalized_data['yearPublished'] or normalized_data['type'] is None:
+        return jsonify({"message": "Missing required fields."}), 400
+
+    if Books.query.filter_by(name=normalized_data['name']).first():
         return jsonify({"message": "Book with this name already exists."}), 400
     
-    if data['type'] not in [1, 2, 3]:
+    if normalized_data['type'] not in [1, 2, 3]:
         return jsonify({"message": "Invalid book type."}), 400
 
-    new_book = Books(name=data['name'], author=data['author'], year_published=data['yearPublished'], type=data['type'])
+    new_book = Books(name=normalized_data['name'], author=normalized_data['author'], year_published=normalized_data['yearPublished'], type=normalized_data['type'])
     db.session.add(new_book)
     db.session.commit()
-    return jsonify({"message": f"Book '{data['name']}' added successfully."}), 201
+    return jsonify({"message": f"Book '{normalized_data['name']}' added successfully."}), 201
 
 @app.route('/loan_book', methods=['POST'])
 def loan_book():
