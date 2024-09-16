@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from flask_cors import CORS
 
 app = Flask(__name__)
+
 CORS(app)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///library.db'
