@@ -1,7 +1,9 @@
-from flask import Flask,request, jsonify
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from datetime import datetime, timedelta, timezone
+from flask import Flask
 from flask_cors import CORS
+from dateutil import tz
 
 app = Flask(__name__)
 
@@ -13,7 +15,7 @@ db = SQLAlchemy(app)
 
 class Books(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(100), nullable=False)  # Correct column name
+    name = db.Column(db.String(100),unique=True, nullable=False)
     author = db.Column(db.String(100), nullable=False)
     year_published = db.Column(db.Integer, nullable=False)
     type = db.Column(db.Integer, nullable=False)
@@ -39,6 +41,7 @@ class Loan(db.Model):
     book_id = db.Column(db.Integer, db.ForeignKey('books.id'), primary_key=True)
     loan_date = db.Column(db.DateTime, default=datetime.now(timezone.utc))
     return_date = db.Column(db.DateTime)
+    deleted = db.Column(db.Boolean, default=False)
 
     def __repr__(self):
         return f'<Loan CustID={self.cust_id}, BookID={self.book_id}>'
@@ -52,7 +55,7 @@ def seed_data():
         db.session.bulk_save_objects([
             Customers(name='John Doe', city='New York', age=30, email='john.doe@example.com'),
             Customers(name='Jane Smith', city='Los Angeles', age=25, email='jane.smith@example.com'),
-            Customers(name='Jade Bmith', city='Los Demons', age=666, email='jade.bmith@example.com')
+            Customers(name='Jade Bmith', city='california', age=55, email='jade.bmith@example.com')
         ])
         db.session.commit()
 
@@ -62,22 +65,50 @@ def seed_data():
             Books(name='The Great Gatsby', author='F. Scott Fitzgerald', year_published=1925, type=1),
             Books(name='1984', author='George Orwell', year_published=1949, type=2),
             Books(name='To Kill a Mockingbird', author='Harper Lee', year_published=1960, type=3),
-            Books(name='To No Kill a Mockingbird', author='Harper Lee', year_published=2005, type=2),
-            Books(name='To Yes Kill a Mockingbird', author='Harper Lee', year_published=1999, type=3)
+            Books(name='Crime and Punishment', author='Fyodor Dostoevsky', year_published=1866, type=1),
         ])
         db.session.commit()
+
+
         
 
 @app.route('/add_customer', methods=['POST'])
 def add_customer():
     data = request.json
-    if Customers.query.filter_by(email=data['email']).first():
+
+    # Normalize field names to lowercase
+    normalized_data = {
+        'name': data.get('name') or data.get('Name'),
+        'city': data.get('city') or data.get('City'),
+        'age': data.get('age') or data.get('Age'),
+        'email': data.get('email') or data.get('Email')
+    }
+
+    # Ensure all required fields are present
+    if not normalized_data['name'] or not normalized_data['city'] or normalized_data['age'] is None or not normalized_data['email']:
+        return jsonify({"message": "Missing required fields."}), 400
+
+    if Customers.query.filter_by(email=normalized_data['email']).first():
         return jsonify({"message": "Customer with this email already exists."}), 400
-    
-    new_customer = Customers(name=data['name'], city=data['city'], age=data['age'], email=data['email'])
+
+    new_customer = Customers(
+        name=normalized_data['name'],
+        city=normalized_data['city'],
+        age=normalized_data['age'],
+        email=normalized_data['email']
+    )
     db.session.add(new_customer)
-    db.session.commit()
-    return jsonify({"message": f"Customer '{data['name']}' added successfully."}), 201
+    
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "An error occurred while adding the customer: " + str(e)}), 500
+
+    return jsonify({"message": f"Customer '{normalized_data['name']}' added successfully."}), 201
+
+
+
 
 @app.route('/add_book', methods=['POST'])
 def add_book():
@@ -106,67 +137,120 @@ def add_book():
     db.session.commit()
     return jsonify({"message": f"Book '{normalized_data['name']}' added successfully."}), 201
 
+
+
 @app.route('/loan_book', methods=['POST'])
 def loan_book():
     data = request.json
-    book_id = data.get('bookId')
-    cust_id = data.get('custId')
+    book_name = data.get('bookName')
+    customer_email = data.get('customerEmail')
 
-    # Check if the book exists
-    book = Books.query.filter_by(id=book_id, deleted=False).first()
+    # Validate input
+    if not book_name or not customer_email:
+        return jsonify({"message": "Both book name and customer email are required."}), 400
+
+    # Get the book ID based on the name
+    book = Books.query.filter_by(name=book_name, deleted=False).first()
     if not book:
         return jsonify({"message": "Book not found."}), 404
 
-    # Check if the book is already loaned
-    existing_loan = Loan.query.filter_by(book_id=book_id, return_date=None).first()
-    if existing_loan:
-        return jsonify({"message": "Book is already loaned to another customer."}), 400
+    book_id = book.id
 
-    # Check if the customer exists
-    customer = Customers.query.filter_by(id=cust_id, deleted=False).first()
+    # Get the customer ID based on the email
+    customer = Customers.query.filter_by(email=customer_email, deleted=False).first()
     if not customer:
         return jsonify({"message": "Customer not found."}), 404
 
-    # Check if the customer has already loaned 3 books
-    current_loans = Loan.query.filter_by(cust_id=cust_id, return_date=None).count()
-    if current_loans >= 3:
-        return jsonify({"message": "Customer cannot loan more than 3 books."}), 400
+    cust_id = customer.id
 
-    # Add a new loan record
-    max_loan_days = get_max_loan_days(book.type)
-    if max_loan_days == 0:
-        return jsonify({"message": "Invalid book type."}), 400
+    # Check if the book is already loaned out to any customer
+    active_loan_for_book = Loan.query.filter_by(book_id=book_id, return_date=None, deleted=False).first()
+    if active_loan_for_book:
+        return jsonify({"message": f"Book '{book_name}' is currently loaned out to another customer."}), 400
 
-    return_date = datetime.now(timezone.utc) + timedelta(days=max_loan_days)
-    new_loan = Loan(cust_id=cust_id, book_id=book_id, loan_date=datetime.now(timezone.utc), return_date=None)
+    # Check for existing loans for this customer
+    existing_loan = Loan.query.filter_by(cust_id=cust_id, book_id=book_id).first()
+    if existing_loan:
+        if existing_loan.deleted:
+            # Restore the deleted loan
+            existing_loan.deleted = False
+            existing_loan.loan_date = datetime.now(timezone.utc)
+            existing_loan.return_date = None
+            
+            db.session.commit()
+            return jsonify({"message": f"Book '{book_name}' loaned to customer '{customer_email}' successfully."}), 200
+        else:
+            return jsonify({"message": f"This book is currently loaned out to this customer '{customer_email}'."}), 400
+
+    # Check how many active loans the customer has
+    active_loans_count = Loan.query.filter_by(cust_id=cust_id, return_date=None, deleted=False).count()
+    if active_loans_count >= 3:
+        return jsonify({"message": "Customer cannot loan more than 3 books at the same time."}), 400
+
+    # Create a new loan record
+    new_loan = Loan(
+        cust_id=cust_id,
+        book_id=book_id,
+        loan_date=datetime.now(timezone.utc),
+        return_date=None,
+        deleted=False
+    )
+    
     db.session.add(new_loan)
-    db.session.commit()
 
-    return jsonify({
-        "message": "Book loaned successfully.",
-        "return_date": return_date.isoformat()
-    }), 200
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "An error occurred while processing the loan: " + str(e)}), 500
+
+    return jsonify({"message": f"Book '{book_name}' loaned to customer '{customer_email}' successfully."}), 201
+
 
 @app.route('/return_book', methods=['POST'])
 def return_book():
     data = request.json
-    book_id = data.get('bookId')
-    cust_id = data.get('custId')
+    book_name = data.get('bookName')
+    customer_email = data.get('customerEmail')
 
-    # Find the loan record
-    loan = Loan.query.filter_by(book_id=book_id, cust_id=cust_id, return_date=None).first()
+    # Validate input
+    if not book_name or not customer_email:
+        return jsonify({"message": "Both book name and customer email are required."}), 400
+
+    # Get the book ID based on the name
+    book = Books.query.filter_by(name=book_name, deleted=False).first()
+    if not book:
+        return jsonify({"message": "Book not found."}), 404
+
+    book_id = book.id
+
+    # Get the customer ID based on the email
+    customer = Customers.query.filter_by(email=customer_email, deleted=False).first()
+    if not customer:
+        return jsonify({"message": "Customer not found."}), 404
+
+    cust_id = customer.id
+
+    # Find the active loan record
+    loan = Loan.query.filter_by(cust_id=cust_id, book_id=book_id, return_date=None, deleted=False).first()
     if not loan:
-        return jsonify({"message": "Loan record not found or already returned."}), 404
+        return jsonify({"message": f"No active loan found for customer '{customer_email}' and book '{book_name}'."}), 404
 
-    # Mark the book as returned
+    # Mark the loan as returned
     loan.return_date = datetime.now(timezone.utc)
-    db.session.commit()
+    loan.deleted = True
 
-    return jsonify({
-        "message": "Book returned successfully.",
-        "return_date": loan.return_date.isoformat()
-    }), 200
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({"message": "An error occurred while returning the book: " + str(e)}), 500
 
+    return jsonify({"message": f"Book '{book_name}' returned successfully by customer '{customer_email}'."}), 200
+
+
+
+          
 
 @app.route('/display_all_books', methods=['GET'])
 def display_all_books():
@@ -179,6 +263,7 @@ def display_all_books():
         "type": book.type
     } for book in books]), 200
 
+
 @app.route('/display_all_customers', methods=['GET'])
 def display_all_customers():
     customers = Customers.query.filter_by(deleted=False).all()
@@ -190,35 +275,53 @@ def display_all_customers():
         "email": customer.email
     } for customer in customers]), 200
 
+
 @app.route('/display_all_loans', methods=['GET'])
 def display_all_loans():
     loans = Loan.query.all()
-    return jsonify([{
-        "custId": loan.cust_id,
-        "bookId": loan.book_id,
-        "loanDate": loan.loan_date.isoformat(),
-        "returnDate": loan.return_date.isoformat() if loan.return_date else "Not returned yet"
-    } for loan in loans]), 200
+    result = []
+    
+    for loan in loans:
+        loan_date = loan.loan_date.astimezone(tz.tzlocal())
+        return_date = loan.return_date.astimezone(tz.tzlocal()) if loan.return_date else "Not returned yet"
+        result.append({
+            "custId": loan.cust_id,
+            "bookId": loan.book_id,
+            "loanDate": loan_date.isoformat(),
+            "returnDate": return_date if isinstance(return_date, str) else return_date.isoformat()
+        })
+
+    return jsonify(result), 200
+
 
 @app.route('/late_loans', methods=['GET'])
 def late_loans():
-    now_utc = datetime.now(timezone.utc)
+    # Get current UTC time
+    now_utc = datetime.now(tz.tzutc())
+
+    # Query for late loans
     late_loans_query = db.session.query(Loan, Books, Customers).join(Books).join(Customers).filter(
         Loan.return_date == None,
         Loan.loan_date + timedelta(days=get_max_loan_days(Books.type)) < now_utc
     ).all()
 
-    result = [{
-        "book_id": book.id,
-        "book_name": book.name,
-        "customer_id": customer.id,
-        "customer_name": customer.name,
-        "loan_date": loan.loan_date.isoformat(),
-        "due_date": (loan.loan_date + timedelta(days=get_max_loan_days(book.type))).isoformat()
-    } for loan, book, customer in late_loans_query]
+    # Prepare results
+    result = []
+    for loan, book, customer in late_loans_query:
+        # Convert loan date and due date to local timezone
+        loan_date_local = loan.loan_date.astimezone(tz.tzlocal())
+        due_date_local = (loan.loan_date + timedelta(days=get_max_loan_days(book.type))).astimezone(tz.tzlocal())
+
+        result.append({
+            "book_id": book.id,
+            "book_name": book.name,
+            "customer_id": customer.id,
+            "customer_name": customer.name,
+            "loan_date": loan_date_local.isoformat(),
+            "due_date": due_date_local.isoformat()
+        })
 
     return jsonify(result), 200
-
 
 
 @app.route('/find_book_by_name', methods=['POST'])
@@ -254,8 +357,6 @@ def find_book_by_name():
 
 
 
-
-
 @app.route('/find_customer_by_name', methods=['POST'])
 def find_customer_by_name():
     data = request.json
@@ -284,67 +385,112 @@ def find_customer_by_name():
 
 
 
-
 @app.route('/remove_book', methods=['DELETE'])
 def remove_book():
     data = request.json
-    book_id = data.get('bookId')
+    book_name = data.get('bookName')
+    
 
-    if not book_id:
-        return jsonify({"message": "Book ID is required."}), 400
+    # Validate input
+    if not book_name:
+        return jsonify({"message": " Book name are required."}), 400
 
-    book = Books.query.get(book_id)
-    if not book or book.deleted:
-        return jsonify({"message": "Book not found or already deleted."}), 404
+    # Get the book based on the name
+    book = Books.query.filter_by(name=book_name, deleted=False).first()
+    if not book:
+        return jsonify({"message": "Book not found."}), 404
 
-    if Loan.query.filter_by(book_id=book_id, return_date=None).first():
+    # Check if the book is currently loaned out
+    if Loan.query.filter_by(book_id=book.id, return_date=None).first():
         return jsonify({"message": "Cannot remove book. It is currently loaned out."}), 400
 
+    # Mark the book as deleted
     book.deleted = True
     db.session.commit()
 
-    return jsonify({"message": f"Book ID {book_id} has been marked as deleted."}), 200
-
-
+    return jsonify({"message": f"Book '{book_name}' has been marked as deleted."}), 200
 
 @app.route('/remove_customer', methods=['DELETE'])
 def remove_customer():
     data = request.json
-    customer_id = data.get('customerId')
+    customer_email = data.get('customerEmail')
 
-    if not customer_id:
-        return jsonify({"message": "Customer ID is required."}), 400
+    # Validate input
+    if not customer_email:
+        return jsonify({"message": "Customer email is required."}), 400
 
-    customer = Customers.query.get(customer_id)
-    if not customer or customer.deleted:
-        return jsonify({"message": "Customer not found or already deleted."}), 404
+    customer = Customers.query.filter_by(email=customer_email, deleted=False).first()
+    if not customer:
+        return jsonify({"message": "Customer not found."}), 404
 
-    if Loan.query.filter_by(cust_id=customer_id, return_date=None).first():
+    # Check if the customer has active loans
+    if Loan.query.filter_by(cust_id=customer.id, return_date=None).first():
         return jsonify({"message": "Cannot remove customer. They have active loans."}), 400
 
+    # Mark the customer as deleted
     customer.deleted = True
     db.session.commit()
 
-    return jsonify({"message": f"Customer ID {customer_id} has been marked as deleted."}), 200
+    return jsonify({"message": f"Customer '{customer_email}' has been marked as deleted."}), 200
+
+@app.route('/restore_book', methods=['POST'])
+def restore_book():
+    data = request.json
+    book_name = data.get('bookName')
+
+    # Validate input
+    if not book_name:
+        return jsonify({"message": "Book name is required."}), 400
+
+    book = Books.query.filter_by(name=book_name, deleted=True).first()
+    if not book:
+        return jsonify({"message": "Deleted book not found."}), 404
+
+    # Restore the deleted book
+    book.deleted = False
+    db.session.commit()
+
+    return jsonify({"message": f"Book '{book_name}' has been restored."}), 200
+
+
+@app.route('/restore_customer', methods=['POST'])
+def restore_customer():
+    data = request.json
+    customer_email = data.get('customerEmail')
+
+    # Validate input
+    if not customer_email:
+        return jsonify({"message": "Customer email is required."}), 400
+
+    customer = Customers.query.filter_by(email=customer_email, deleted=True).first()
+    if not customer:
+        return jsonify({"message": "Deleted customer not found."}), 404
+
+    # Restore the deleted customer
+    customer.deleted = False
+    db.session.commit()
+
+    return jsonify({"message": f"Customer '{customer_email}' has been restored."}), 200
 
 
 
-@app.route('/get_customer_id_by_name/<string:name>', methods=['GET'])
-def get_customer_id_by_name(name):
-    customer = Customers.query.filter(db.func.lower(Customers.name) == db.func.lower(name), Customers.deleted == False).first()
-    if customer:
-        return jsonify({"id": customer.id}), 200
-    else:
-        return jsonify({"message": "Customer not found."}), 404
-    
-
-@app.route('/get_book_id_by_name/<string:name>', methods=['GET'])
-def get_book_id_by_name(name):
-    book = Books.query.filter(db.func.lower(Books.name) == db.func.lower(name), Books.deleted == False).first()
+@app.route('/get_book_id_by_name', methods=['GET'])
+def get_book_id_by_name():
+    name = request.args.get('name')
+    book = Books.query.filter_by(name=name).first()
     if book:
         return jsonify({"id": book.id}), 200
-    else:
-        return jsonify({"message": "Book not found."}), 404
+    return jsonify({"message": "Book not found."}), 404
+
+
+
+@app.route('/get_customer_id_by_email', methods=['GET'])
+def get_customer_id_by_email():
+    email = request.args.get('email')
+    customer = Customers.query.filter_by(email=email).first()
+    if customer:
+        return jsonify({"id": customer.id}), 200
+    return jsonify({"message": "Customer not found."}), 404
 
 
 
